@@ -167,6 +167,9 @@ export interface OrderDetail {
     unitPriceSnapshot: string;
     lineTotal: string;
     kitchenNote: string | null;
+    // Which guest (of possibly several sharing this table's open tab) added
+    // this line — only meaningful when the order has more than one.
+    guestName: string | null;
     modifiers: { id: string; nameSnapshot: string; priceAdjSnapshot: string }[];
   }[];
   kots: {

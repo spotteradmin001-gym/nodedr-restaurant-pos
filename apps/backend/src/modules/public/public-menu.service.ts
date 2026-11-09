@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import type { CartItemDto } from '@nodedr-restaurant/types';
+import { BillShareService } from '../bill-share/bill-share.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
@@ -12,6 +13,7 @@ export class PublicMenuService {
     private readonly ordersService: OrdersService,
     private readonly notifications: NotificationsService,
     private readonly realtime: RealtimeGateway,
+    private readonly billShare: BillShareService,
   ) {}
 
   private async resolveTable(qrToken: string) {
@@ -98,6 +100,7 @@ export class PublicMenuService {
       return this.ordersService.addItems(branchId, openOrder.id, items, {
         enforceModifierLimits: true,
         websiteOnly: true,
+        guestName,
       });
     }
 
@@ -136,14 +139,17 @@ export class PublicMenuService {
   /** Live status of the table's current tab, for the guest's QR page. */
   async getStatus(qrToken: string) {
     const table = await this.resolveTable(qrToken);
+    const branchId = table.floor.branchId;
     const order = await this.prisma.order.findFirst({
       where: { tableId: table.id, status: { in: ['OPEN', 'BILLED'] } },
       orderBy: { createdAt: 'desc' },
       select: {
+        id: true,
         orderNumber: true,
         status: true,
         acceptance: true,
         totalAmount: true,
+        updatedAt: true,
         items: {
           select: {
             id: true,
@@ -158,7 +164,30 @@ export class PublicMenuService {
       where: { tableId: table.id, resolvedAt: null },
       select: { type: true },
     });
-    return { order, openRequests: requests.map((r) => r.type) };
+
+    // Once staff resolve a "bring the bill" request, hand the guest's own
+    // page the same stateless bill-share token the POS's "Share bill (QR)"
+    // button mints — this is what lets the order page swap itself into the
+    // bill/payment view without the guest reloading. The `updatedAt` guard
+    // (not `createdAt`) matters: addItems() bumps it too, so a guest who
+    // orders MORE after the request was resolved correctly loses the stale
+    // "ready" state until a fresh bill request is made.
+    let billToken: string | null = null;
+    if (order) {
+      const latestBillRequest = await this.prisma.tableRequest.findFirst({
+        where: { tableId: table.id, type: 'BILL' },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true, resolvedAt: true },
+      });
+      if (
+        latestBillRequest?.resolvedAt &&
+        latestBillRequest.createdAt >= order.updatedAt
+      ) {
+        billToken = this.billShare.issueToken(order.id, branchId);
+      }
+    }
+
+    return { order, openRequests: requests.map((r) => r.type), billToken };
   }
 
   /** "Call waiter" / "Bring the bill". One open request per type per table. */

@@ -1196,6 +1196,14 @@ model Customer {
   allergies   String?
   notes       String?
 
+  // Set once this customer signs up for self-service login from the table
+  // QR flow (apps/backend/src/modules/public/public-customer-auth.*). Null
+  // for a CRM-only record staff created (walk-in, no login capability) —
+  // signing up later attaches a password to that same row instead of
+  // creating a duplicate. No uniqueness enforced on email/phone here, so
+  // lookups are by findFirst, not a DB constraint.
+  passwordHash String?
+
   loyaltyPoints   Int     @default(0)
   // Personal referral code (created the first time it is needed).
   referralCode    String? @unique
@@ -1486,6 +1494,11 @@ model OrderItem {
   lineTotal   Decimal       @db.Decimal(12, 2)
   kitchenNote String?
   status      KotItemStatus @default(NEW)
+
+  // Which guest (of possibly several sharing one table's open tab) added
+  // this line — the table-QR flow merges every guest's order into the same
+  // open Order, so this is the only record of who ordered what.
+  guestName String?
 
   modifiers    OrderItemModifier[]
   kotItems     KotItem[]
