@@ -405,6 +405,7 @@ export class OrdersService {
               quantity: line.cartItem.quantity,
               lineTotal: line.priced.lineTotal,
               kitchenNote: line.cartItem.kitchenNote,
+              guestName: dto.guestName ?? null,
               modifiers: {
                 create: line.selectedModifiers.map((m) => ({
                   modifier: { connect: { id: m.id } },
@@ -497,7 +498,12 @@ export class OrdersService {
     branchId: string,
     orderId: string,
     items: CartItemDto[],
-    options: { enforceModifierLimits?: boolean; websiteOnly?: boolean } = {},
+    options: {
+      enforceModifierLimits?: boolean;
+      websiteOnly?: boolean;
+      /** Which guest (of possibly several sharing this table's open tab) added these items. */
+      guestName?: string | null;
+    } = {},
   ) {
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, branchId },
@@ -560,6 +566,7 @@ export class OrdersService {
               quantity: line.cartItem.quantity,
               lineTotal: line.priced.lineTotal,
               kitchenNote: line.cartItem.kitchenNote,
+              guestName: options.guestName ?? null,
               modifiers: {
                 create: line.selectedModifiers.map((m) => ({
                   modifier: { connect: { id: m.id } },

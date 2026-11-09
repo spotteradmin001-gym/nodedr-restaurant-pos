@@ -1,15 +1,19 @@
 "use client";
 
-import { BellRing, CheckCircle2, Leaf, Minus, Plus, Receipt, UtensilsCrossed } from "lucide-react";
+import { BellRing, CheckCircle2, Leaf, LogIn, Minus, Plus, Receipt, UserPlus, UtensilsCrossed } from "lucide-react";
 import { use, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LanguageSwitcher } from "@/components/layout/language-switcher";
+import { BillView, type PublicBillResponse } from "@/components/order/bill-view";
 import { ModifierPickerDialog } from "@/components/pos/modifier-picker-dialog";
 import { PopBurst } from "@/components/order/pop-burst";
 import { Button } from "@/components/ui/button";
+import { UploadImage } from "@/components/ui/upload-image";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useCustomerLogin, useCustomerMe, useCustomerSignup } from "@/hooks/use-customer-auth";
 import { useI18n } from "@/lib/i18n/context";
 import { api, ApiError } from "@/lib/api";
 import { playSuccessChime, vibrateSuccess } from "@/lib/celebrate";
@@ -19,6 +23,7 @@ interface PublicMenuItem {
   id: string;
   name: string;
   description: string | null;
+  imageUrl: string | null;
   price: string;
   isVeg: boolean;
   modifierGroups: {
@@ -52,6 +57,8 @@ interface PublicStatus {
     items: { id: string; nameSnapshot: string; quantity: number; status: string }[];
   } | null;
   openRequests: ("WAITER" | "BILL")[];
+  /** Set once staff resolve a "bring the bill" request — see PublicMenuService.getStatus. */
+  billToken?: string | null;
 }
 
 const ITEM_STATUS_LABEL: Record<string, string> = {
@@ -83,6 +90,7 @@ export default function PublicMenuPage({
   const { qrToken } = use(params);
   const { t } = useI18n();
   const nameStorageKey = `qr-guest-name:${qrToken}`;
+  const tokenStorageKey = `customer-token:${qrToken}`;
   const [cart, setCart] = useState<CartLine[]>([]);
   const [pickerItem, setPickerItem] = useState<PublicMenuItem | null>(null);
   const queryClient = useQueryClient();
@@ -90,20 +98,77 @@ export default function PublicMenuPage({
   const [guestName, setGuestName] = useState("");
   const [nameDraft, setNameDraft] = useState("");
 
-  // Read any name saved earlier this session after mount, not in the state
-  // initializer — sessionStorage isn't available during server rendering,
-  // so reading it there would make the client's first render disagree with
-  // the server-rendered HTML. This is the legitimate exception the
+  // Pre-order identity gate: log in / sign up / continue as guest. "choice"
+  // is the default landing screen; the existing guest-name-only flow lives
+  // on under "guest" unchanged.
+  const [authMode, setAuthMode] = useState<"choice" | "login" | "signup" | "guest">("choice");
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
+  const [signupName, setSignupName] = useState("");
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  // Whether we've finished checking for a remembered session (sessionStorage
+  // guest name, or a stored customer login token) — gates the identity
+  // screen so it never flashes before that check resolves. Set exactly once,
+  // by the mount effect below, regardless of which branch it takes.
+  const [authChecked, setAuthChecked] = useState(false);
+
+  // Read any name/session saved earlier, not in the state initializer —
+  // browser storage isn't available during server rendering, so reading it
+  // there would make the client's first render disagree with the
+  // server-rendered HTML. This is the legitimate exception the
   // set-state-in-effect rule carves out for genuine external-system reads
-  // (a browser storage API unavailable until after hydration), not the
+  // (storage unavailable until after hydration), not the
   // derive-state-from-already-available-data anti-pattern it otherwise
   // flags.
   useEffect(() => {
-    const saved = sessionStorage.getItem(nameStorageKey);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (saved) setGuestName(saved);
+    const savedName = sessionStorage.getItem(nameStorageKey);
+    if (savedName) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setGuestName(savedName);
+    } else {
+      const savedToken = localStorage.getItem(tokenStorageKey);
+      if (savedToken) setAuthToken(savedToken);
+    }
+    setAuthChecked(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Validates a remembered token, if one was found above. Deliberately NOT
+  // mirrored into `guestName` state via an effect — `restoredName` below is
+  // derived straight from the query result every render, which is both
+  // simpler and avoids reacting to already-available data inside an effect.
+  const customerMe = useCustomerMe(qrToken, authToken);
+  const restoredName = authToken && customerMe.data ? customerMe.data.name?.trim() || null : null;
+  const effectiveGuestName = guestName || restoredName || "";
+  const sessionResolving = !authChecked || (!!authToken && customerMe.isPending);
+
+  // A dead/expired token clears itself out of storage — a plain write to an
+  // external system, not a setState call, so this is the legitimate kind of
+  // effect the rule above allows.
+  useEffect(() => {
+    if (authToken && customerMe.isError) localStorage.removeItem(tokenStorageKey);
+  }, [authToken, customerMe.isError, tokenStorageKey]);
+
+  const customerLogin = useCustomerLogin(qrToken);
+  const customerSignup = useCustomerSignup(qrToken);
+  const handleAuthSuccess = (data: { token: string; customer: { name: string | null } }) => {
+    localStorage.setItem(tokenStorageKey, data.token);
+    setAuthToken(data.token);
+    const name = data.customer.name?.trim() ?? "";
+    setGuestName(name);
+    sessionStorage.setItem(nameStorageKey, name);
+  };
+  const onLoginSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    customerLogin.mutate({ identifier, password }, { onSuccess: handleAuthSuccess });
+  };
+  const onSignupSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    customerSignup.mutate(
+      { name: signupName, identifier, password },
+      { onSuccess: handleAuthSuccess },
+    );
+  };
 
   useEffect(() => {
     if (placed) {
@@ -119,11 +184,38 @@ export default function PublicMenuPage({
   });
 
   // Live status of the table's tab and any pending waiter/bill request.
+  // Polled rather than pushed (the realtime socket gateway requires a staff
+  // session, so it can't be reused for an unauthenticated guest page) — 4s
+  // keeps the "staff approved the bill" transition feeling automatic without
+  // the guest ever needing to reload.
   const { data: status } = useQuery({
     queryKey: ["public-status", qrToken],
     queryFn: () => api.get<PublicStatus>(`/public/menu/${qrToken}/status`),
-    refetchInterval: 8000,
+    refetchInterval: 4000,
     enabled: !!data,
+  });
+
+  // Latches the bill token the moment it first appears and keeps it even if
+  // a later poll comes back without one (e.g. the order has since been
+  // fully paid and dropped out of the backend's open-order lookup) — the
+  // guest should settle into the bill view's own "Paid" state, not get
+  // bounced back to an empty menu. Adjusted directly during render (React's
+  // documented alternative to an effect for "remember a value from a
+  // previous render"), guarded on the raw poll value so it only runs on an
+  // actual change rather than every render.
+  const [activeBillToken, setActiveBillToken] = useState<string | null>(null);
+  const [seenBillToken, setSeenBillToken] = useState<string | null>(null);
+  const polledBillToken = status?.billToken ?? null;
+  if (polledBillToken !== seenBillToken) {
+    setSeenBillToken(polledBillToken);
+    if (polledBillToken) setActiveBillToken(polledBillToken);
+  }
+
+  const billQuery = useQuery({
+    queryKey: ["public-bill", activeBillToken],
+    queryFn: () => api.get<PublicBillResponse>(`/public/bill/${activeBillToken}`),
+    enabled: !!activeBillToken,
+    refetchInterval: 4000,
   });
 
   const requestService = useMutation({
@@ -134,7 +226,7 @@ export default function PublicMenuPage({
   const placeOrder = useMutation({
     mutationFn: () =>
       api.post<{ orderNumber: string }>(`/public/menu/${qrToken}/order`, {
-        guestName,
+        guestName: effectiveGuestName,
         items: cart.map((l) => ({
           menuItemId: l.menuItemId,
           quantity: l.quantity,
@@ -205,7 +297,7 @@ export default function PublicMenuPage({
           <CheckCircle2 className="h-10 w-10 text-success" />
         </div>
         <p className="text-lg font-medium text-foreground">
-          {t("order.thankYouName", { name: guestName })}
+          {t("order.thankYouName", { name: effectiveGuestName })}
         </p>
         <p className="text-sm text-muted-foreground">
           {t("order.thanksMessage", { branch: data?.branchName ?? t("order.theKitchen") })}
@@ -220,7 +312,14 @@ export default function PublicMenuPage({
     );
   }
 
-  if (!guestName) {
+  if (!effectiveGuestName) {
+    if (sessionResolving) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-background">
+          <Skeleton className="h-7 w-40" />
+        </div>
+      );
+    }
     return (
       <div className="relative flex min-h-screen flex-col items-center justify-center gap-4 bg-background px-6 text-center">
         <div className="absolute right-4 top-4">
@@ -237,28 +336,190 @@ export default function PublicMenuPage({
             <p className="mt-1 text-sm text-muted-foreground">{data?.tableName}</p>
           </div>
         )}
-        <form
-          className="flex w-full max-w-xs flex-col gap-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            confirmName();
-          }}
-        >
-          <div className="flex flex-col gap-2 text-left">
-            <Label htmlFor="guest-name">{t("order.whatsYourName")}</Label>
-            <Input
-              id="guest-name"
-              value={nameDraft}
-              onChange={(e) => setNameDraft(e.target.value)}
-              placeholder={t("order.namePlaceholder")}
-              autoFocus
-              maxLength={60}
-            />
+
+        {authMode === "choice" && (
+          <div className="flex w-full max-w-xs flex-col gap-3">
+            <Button className="h-11" onClick={() => setAuthMode("login")}>
+              <LogIn className="mr-2 h-4 w-4" />
+              {t("order.auth.logIn")}
+            </Button>
+            <Button variant="outline" className="h-11" onClick={() => setAuthMode("signup")}>
+              <UserPlus className="mr-2 h-4 w-4" />
+              {t("order.auth.signUp")}
+            </Button>
+            <Button variant="ghost" className="h-11" onClick={() => setAuthMode("guest")}>
+              {t("order.auth.continueAsGuest")}
+            </Button>
           </div>
-          <Button type="submit" className="h-11" disabled={!nameDraft.trim()}>
-            {t("order.continueToMenu")}
-          </Button>
-        </form>
+        )}
+
+        {authMode === "login" && (
+          <form className="flex w-full max-w-xs flex-col gap-3" onSubmit={onLoginSubmit}>
+            <div className="flex flex-col gap-2 text-left">
+              <Label htmlFor="login-identifier">{t("order.auth.emailOrPhone")}</Label>
+              <Input
+                id="login-identifier"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                autoFocus
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-2 text-left">
+              <Label htmlFor="login-password">{t("order.auth.password")}</Label>
+              <PasswordInput
+                id="login-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            {customerLogin.isError && (
+              <p className="text-xs text-destructive">
+                {customerLogin.error instanceof ApiError
+                  ? customerLogin.error.message
+                  : t("order.auth.somethingWrong")}
+              </p>
+            )}
+            <Button type="submit" className="h-11" disabled={customerLogin.isPending}>
+              {customerLogin.isPending ? t("order.auth.loggingIn") : t("order.auth.logIn")}
+            </Button>
+            <Button type="button" variant="ghost" className="h-9" onClick={() => setAuthMode("choice")}>
+              {t("order.auth.back")}
+            </Button>
+          </form>
+        )}
+
+        {authMode === "signup" && (
+          <form className="flex w-full max-w-xs flex-col gap-3" onSubmit={onSignupSubmit}>
+            <div className="flex flex-col gap-2 text-left">
+              <Label htmlFor="signup-name">{t("order.whatsYourName")}</Label>
+              <Input
+                id="signup-name"
+                value={signupName}
+                onChange={(e) => setSignupName(e.target.value)}
+                autoFocus
+                required
+                maxLength={60}
+              />
+            </div>
+            <div className="flex flex-col gap-2 text-left">
+              <Label htmlFor="signup-identifier">{t("order.auth.emailOrPhone")}</Label>
+              <Input
+                id="signup-identifier"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-2 text-left">
+              <Label htmlFor="signup-password">{t("order.auth.password")}</Label>
+              <PasswordInput
+                id="signup-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={8}
+              />
+            </div>
+            {customerSignup.isError && (
+              <p className="text-xs text-destructive">
+                {customerSignup.error instanceof ApiError
+                  ? customerSignup.error.message
+                  : t("order.auth.somethingWrong")}
+              </p>
+            )}
+            <Button type="submit" className="h-11" disabled={customerSignup.isPending}>
+              {customerSignup.isPending ? t("order.auth.signingUp") : t("order.auth.signUp")}
+            </Button>
+            <Button type="button" variant="ghost" className="h-9" onClick={() => setAuthMode("choice")}>
+              {t("order.auth.back")}
+            </Button>
+          </form>
+        )}
+
+        {authMode === "guest" && (
+          <form
+            className="flex w-full max-w-xs flex-col gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              confirmName();
+            }}
+          >
+            <div className="flex flex-col gap-2 text-left">
+              <Label htmlFor="guest-name">{t("order.whatsYourName")}</Label>
+              <Input
+                id="guest-name"
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder={t("order.namePlaceholder")}
+                autoFocus
+                maxLength={60}
+              />
+            </div>
+            <Button type="submit" className="h-11" disabled={!nameDraft.trim()}>
+              {t("order.continueToMenu")}
+            </Button>
+            <Button type="button" variant="ghost" className="h-9" onClick={() => setAuthMode("choice")}>
+              {t("order.auth.back")}
+            </Button>
+          </form>
+        )}
+      </div>
+    );
+  }
+
+  if (activeBillToken) {
+    const bill = billQuery.data;
+    const staffComing = status?.openRequests.includes("WAITER") ?? false;
+    return (
+      <div className="relative min-h-screen bg-background pb-10 print:bg-white">
+        <header className="border-b border-border px-5 py-6 text-center print:border-none">
+          <div className="absolute right-4 top-4">
+            <LanguageSwitcher compact />
+          </div>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">{data?.branchName}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{data?.tableName}</p>
+        </header>
+        <main className="mx-auto max-w-lg px-5 py-6">
+          {billQuery.isLoading || !bill ? (
+            <div className="flex flex-col gap-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-10 rounded-xl" />
+              ))}
+            </div>
+          ) : (
+            <>
+              <BillView
+                data={bill}
+                footer={
+                  <Button
+                    variant="outline"
+                    className="h-11 print:hidden"
+                    disabled={requestService.isPending}
+                    onClick={() => requestService.mutate("WAITER")}
+                  >
+                    <BellRing className="mr-2 h-4 w-4" />
+                    {staffComing ? t("order.auth.staffComing") : t("order.auth.callStaff")}
+                  </Button>
+                }
+              />
+              {!bill.order.isProvisional && (
+                <Button
+                  variant="ghost"
+                  className="mt-4 h-11 w-full print:hidden"
+                  onClick={() => {
+                    setActiveBillToken(null);
+                    setPlaced(null);
+                    setCart([]);
+                  }}
+                >
+                  {t("order.auth.startNewOrder")}
+                </Button>
+              )}
+            </>
+          )}
+        </main>
       </div>
     );
   }
@@ -301,6 +562,14 @@ export default function PublicMenuPage({
                     return (
                       <div key={item.id} className="flex items-start justify-between gap-4 py-3">
                         <div className="flex items-start gap-2">
+                          {item.imageUrl && (
+                            <UploadImage
+                              src={item.imageUrl}
+                              width={56}
+                              height={56}
+                              className="h-14 w-14 shrink-0 rounded-lg object-cover"
+                            />
+                          )}
                           <Leaf
                             className={`mt-1 h-3.5 w-3.5 shrink-0 ${item.isVeg ? "text-success" : "text-destructive"}`}
                           />

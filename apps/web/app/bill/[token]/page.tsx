@@ -1,46 +1,11 @@
 "use client";
 
-import { Receipt, ReceiptText } from "lucide-react";
+import { ReceiptText } from "lucide-react";
 import { use } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Button } from "@/components/ui/button";
+import { BillView, type PublicBillResponse } from "@/components/order/bill-view";
 import { api, ApiError } from "@/lib/api";
-import { formatCurrency } from "@/lib/format";
-import { buildUpiUri } from "@/lib/upi";
-
-interface PublicBillItem {
-  nameSnapshot: string;
-  quantity: number;
-  unitPriceSnapshot: number;
-  lineTotal: number;
-  modifiers: { nameSnapshot: string; priceAdjSnapshot: number }[];
-}
-
-interface PublicBillResponse {
-  restaurantName: string;
-  currency: string;
-  branch: { name: string; address: string | null; phone: string | null };
-  order: {
-    orderNumber: string;
-    type: string;
-    createdAt: string;
-    table: { label: string } | null;
-    customer: { name: string } | null;
-    subtotal: number;
-    discountAmount: number;
-    taxAmount: number;
-    tipAmount: number;
-    loyaltyDiscountAmount: number;
-    totalAmount: number;
-    isProvisional: boolean;
-    amountPaid: number;
-    balanceDue: number;
-    items: PublicBillItem[];
-    payments: { method: string; amount: number }[];
-  };
-  upi: { vpa: string; payeeName: string } | null;
-}
 
 // The guest-facing page a bill-share QR/link opens — see
 // OrdersController.createBillShare and bill-share-dialog.tsx. No login, same
@@ -70,15 +35,6 @@ export default function PublicBillPage({ params }: { params: Promise<{ token: st
   }
 
   const order = data?.order;
-  const upiUri =
-    data?.upi && order && order.balanceDue > 0
-      ? buildUpiUri({
-          vpa: data.upi.vpa,
-          name: data.upi.payeeName,
-          amount: order.balanceDue,
-          note: `Order ${order.orderNumber}`,
-        })
-      : null;
 
   return (
     <div className="min-h-screen bg-background pb-10 print:bg-white">
@@ -106,131 +62,9 @@ export default function PublicBillPage({ params }: { params: Promise<{ token: st
             ))}
           </div>
         ) : (
-          <div className="flex flex-col gap-6">
-            <div className="flex items-center justify-between rounded-2xl border border-border p-4">
-              <div>
-                <p className="text-sm font-medium text-foreground">Order #{order.orderNumber}</p>
-                <p className="text-xs text-muted-foreground">
-                  {new Date(order.createdAt).toLocaleString()}
-                  {order.table ? ` · ${order.table.label}` : ""}
-                </p>
-              </div>
-              <span
-                className={
-                  order.isProvisional
-                    ? "rounded-full bg-secondary px-3 py-1 text-xs font-medium text-secondary-foreground"
-                    : "rounded-full bg-success/10 px-3 py-1 text-xs font-medium text-success"
-                }
-              >
-                {order.isProvisional ? "Payment pending" : "Paid"}
-              </span>
-            </div>
-
-            <div className="rounded-2xl border border-border">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border text-xs uppercase text-muted-foreground">
-                    <th className="px-4 py-2 text-left">Item</th>
-                    <th className="px-4 py-2 text-right">Qty</th>
-                    <th className="px-4 py-2 text-right">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {order.items.map((item, i) => (
-                    <tr key={i} className="border-b border-border last:border-none">
-                      <td className="px-4 py-2 text-foreground">
-                        {item.nameSnapshot}
-                        {item.modifiers.map((m) => (
-                          <div key={m.nameSnapshot} className="text-xs text-muted-foreground">
-                            + {m.nameSnapshot}
-                          </div>
-                        ))}
-                      </td>
-                      <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
-                        {item.quantity}
-                      </td>
-                      <td className="px-4 py-2 text-right tabular-nums text-foreground">
-                        {formatCurrency(item.lineTotal, data.currency)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="flex flex-col gap-1.5 rounded-2xl border border-border p-4 text-sm">
-              <Row label="Subtotal" value={formatCurrency(order.subtotal, data.currency)} />
-              {order.discountAmount > 0 && (
-                <Row
-                  label="Discount"
-                  value={`- ${formatCurrency(order.discountAmount, data.currency)}`}
-                />
-              )}
-              {order.taxAmount > 0 && (
-                <Row label="Tax (incl.)" value={formatCurrency(order.taxAmount, data.currency)} />
-              )}
-              {order.loyaltyDiscountAmount > 0 && (
-                <Row
-                  label="Loyalty"
-                  value={`- ${formatCurrency(order.loyaltyDiscountAmount, data.currency)}`}
-                />
-              )}
-              {order.tipAmount > 0 && (
-                <Row label="Tip" value={formatCurrency(order.tipAmount, data.currency)} />
-              )}
-              <div className="my-1 border-t border-border" />
-              <Row
-                label={order.isProvisional ? "Total due" : "Grand total"}
-                value={formatCurrency(order.totalAmount, data.currency)}
-                strong
-              />
-              {order.amountPaid > 0 && (
-                <>
-                  <Row label="Paid" value={formatCurrency(order.amountPaid, data.currency)} />
-                  <Row
-                    label="Balance due"
-                    value={formatCurrency(order.balanceDue, data.currency)}
-                    strong
-                  />
-                </>
-              )}
-            </div>
-
-            {upiUri && (
-              <a
-                href={upiUri}
-                className="flex items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground print:hidden"
-              >
-                <Receipt className="h-4 w-4" />
-                Pay {formatCurrency(order.balanceDue, data.currency)} via UPI
-              </a>
-            )}
-
-            <Button
-              variant="outline"
-              className="h-11 print:hidden"
-              onClick={() => window.print()}
-            >
-              Print / Save as PDF
-            </Button>
-          </div>
+          <BillView data={data} />
         )}
       </main>
-    </div>
-  );
-}
-
-function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <div
-      className={
-        strong
-          ? "flex items-center justify-between text-base font-semibold text-foreground"
-          : "flex items-center justify-between text-muted-foreground"
-      }
-    >
-      <span>{label}</span>
-      <span className="tabular-nums text-foreground">{value}</span>
     </div>
   );
 }

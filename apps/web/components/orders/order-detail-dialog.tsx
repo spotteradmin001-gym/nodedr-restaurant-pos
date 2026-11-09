@@ -46,6 +46,11 @@ export function OrderDetailDialog({
   const [declineOpen, setDeclineOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const customerName = order?.guestName ?? order?.customer?.name ?? "Walk-in guest";
+  // Several guests at the same table (rush hour) share one open order — this
+  // surfaces who's actually at the table beyond the single name above.
+  const guestNames = order
+    ? [...new Set(order.items.map((item) => item.guestName).filter((name): name is string => !!name))]
+    : [];
   const pending = order?.status === "OPEN" && order?.acceptance === "PENDING";
   const canCancel = order?.status === "OPEN" && !pending;
   const run = (fn: () => Promise<unknown>, done: string) =>
@@ -108,6 +113,9 @@ export function OrderDetailDialog({
                           {item.modifiers.map((m) => m.nameSnapshot).join(", ")}
                         </span>
                       )}
+                      {guestNames.length > 1 && item.guestName && (
+                        <span className="text-xs text-muted-foreground">— {item.guestName}</span>
+                      )}
                     </div>
                     <span className="tabular-nums text-foreground">
                       {formatCurrency(item.lineTotal)}
@@ -137,6 +145,11 @@ export function OrderDetailDialog({
                 Customer
               </div>
               <span className="font-medium text-foreground">{customerName}</span>
+              {guestNames.length > 1 && (
+                <span className="text-xs text-muted-foreground">
+                  Guests: {guestNames.join(", ")}
+                </span>
+              )}
               {phone ? (
                 <>
                   <span className="flex items-center gap-2 text-muted-foreground">
